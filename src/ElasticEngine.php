@@ -6,11 +6,13 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\LazyCollection;
 use Laravel\Scout\Builder;
 use Laravel\Scout\Engines\Engine;
 use ScoutElastic\Builders\SearchBuilder;
 use ScoutElastic\Facades\ElasticClient;
 use ScoutElastic\Indexers\IndexerInterface;
+use ScoutElastic\Payloads\RawPayload;
 use ScoutElastic\Payloads\TypePayload;
 use stdClass;
 
@@ -361,5 +363,88 @@ class ElasticEngine extends Engine
         $query
             ->orderBy($model->getScoutKeyName())
             ->unsearchable();
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function lazyMap(Builder $builder, $results, $model)
+    {
+        if ($this->getTotalCount($results) === 0) {
+            return LazyCollection::make();
+        }
+
+        $scoutKeyName = $model->getScoutKeyName();
+
+        $columns = Arr::get($results, '_payload.body._source');
+
+        if (is_null($columns)) {
+            $columns = ['*'];
+        } else {
+            $columns[] = $scoutKeyName;
+        }
+
+        $ids = $this->mapIds($results)->all();
+
+        $query = $model::usesSoftDelete() ? $model->withTrashed() : $model->newQuery();
+
+        $models = $query
+            ->select($columns)
+            ->whereIn($scoutKeyName, $ids)
+            ->when($builder->queryCallback, function ($query, $callback) {
+                return $callback($query);
+            })
+            ->cursor()
+            ->keyBy($scoutKeyName);
+
+        $values = LazyCollection::make($results['hits']['hits'])
+            ->map(function ($hit) use ($models) {
+                $id = $hit['_id'];
+
+                if (isset($models[$id])) {
+                    $model = $models[$id];
+
+                    if (isset($hit['highlight'])) {
+                        $model->highlight = new Highlight($hit['highlight']);
+                    }
+
+                    //add sort information to results for use
+                    if (isset($hit['sort'])) {
+                        $model->sortPayload = $hit['sort'];
+                    }
+
+                    return $model;
+                }
+            })
+            ->filter()
+            ->values();
+
+        return $values instanceof LazyCollection ? $values : LazyCollection::make($values);
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function createIndex($name, array $options = [])
+    {
+        $payload = (new RawPayload)
+            ->set('index', $name)
+            ->get();
+
+        ElasticClient::indices()
+            ->create($payload);
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function deleteIndex($name)
+    {
+        $payload = (new RawPayload)
+            ->set('index', $name)
+            ->get();
+
+        ElasticClient::indices()
+            ->delete($payload);
     }
 }
