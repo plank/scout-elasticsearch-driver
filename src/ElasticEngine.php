@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\LazyCollection;
 use Laravel\Scout\Builder;
 use Laravel\Scout\Engines\Engine;
+use ScoutElastic\Builders\FilterBuilder;
 use ScoutElastic\Builders\SearchBuilder;
 use ScoutElastic\Facades\ElasticClient;
 use ScoutElastic\Indexers\IndexerInterface;
@@ -131,6 +132,10 @@ class ElasticEngine extends Engine
                 ->setIfNotEmpty('body.query.bool.must.match_all', new stdClass);
 
             $payloadCollection->push($payload);
+        }
+
+        if (!$builder instanceof FilterBuilder) {
+            throw new \Exception('Unrecognized Builder');
         }
 
         return $payloadCollection->map(function (TypePayload $payload) use ($builder, $options) {
